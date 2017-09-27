@@ -461,6 +461,17 @@ namespace Dapper.Contrib.Extensions
             return rowVersion != null ? new[] {rowVersion} : Enumerable.Empty<PropertyInfo>();
         }
 
+        private static bool RowVersionIsWriteable(PropertyInfo rowVersion)
+        {
+            if (rowVersion == null)
+            {
+                return false;
+            }
+
+            var att = rowVersion.GetCustomAttribute<WriteAttribute>(true);
+            return att != null && att.Write;
+        }
+
         internal static string GetSelectStatementColumns(IList<PropertyInfo> properties)
         {
             var sb = new StringBuilder();
