@@ -120,28 +120,26 @@ namespace Dapper.Contrib.Extensions
             }
 
             var name = GetTableName(type);
-            var sbColumnList = new StringBuilder(null);
             var allProperties = TypeCache.TypePropertiesCache(type);
             var keyProperties = TypeCache.KeyPropertiesCache(type);
             var computedProperties = TypeCache.ComputedPropertiesCache(type);
-            var allPropertiesExceptKeyAndComputed =
-                allProperties.Except(keyProperties.Union(computedProperties)).ToList();
+            var rowVersion = TypeCache.RowVersionPropertyCache(type);
+            var allPropertiesExceptKeyComputedAndRowVersion =
+                allProperties.Except(keyProperties.Union(computedProperties).Union(OptionalRowVersion(rowVersion))).ToList();
 
-            for (var i = 0; i < allPropertiesExceptKeyAndComputed.Count; i++)
+            var sbColumnList = new StringBuilder();
+            var sbParameterList = new StringBuilder();
+
+            for (var i = 0; i < allPropertiesExceptKeyComputedAndRowVersion.Count; i++)
             {
-                var property = allPropertiesExceptKeyAndComputed[i];
-                sqlAdapter.AppendColumnName(sbColumnList, property.Name);
-                if (i < allPropertiesExceptKeyAndComputed.Count - 1)
+                if (i != 0)
+                {
                     sbColumnList.Append(", ");
-            }
-
-            var sbParameterList = new StringBuilder(null);
-            for (var i = 0; i < allPropertiesExceptKeyAndComputed.Count; i++)
-            {
-                var property = allPropertiesExceptKeyAndComputed[i];
-                sbParameterList.AppendFormat("@{0}", property.Name);
-                if (i < allPropertiesExceptKeyAndComputed.Count - 1)
                     sbParameterList.Append(", ");
+                }
+                
+                sqlAdapter.AppendColumnName(sbColumnList, allPropertiesExceptKeyComputedAndRowVersion[i].Name);
+                sbParameterList.AppendFormat("@{0}", allPropertiesExceptKeyComputedAndRowVersion[i].Name);
             }
 
             if (!isList) //single entity

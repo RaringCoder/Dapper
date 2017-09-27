@@ -6,6 +6,7 @@ using System.Reflection;
 using System.Text;
 using System.Threading.Tasks;
 using Dapper;
+using Dapper.Contrib.Extensions;
 
 /// <summary>
 /// The SQL Server database adapter.
@@ -75,11 +76,11 @@ public class SqlServerAdapter : ISqlAdapter
 
         return id;
     }
-
+    
     /// <summary>
     /// Adds the name of a column.
     /// </summary>
-    /// <param name="sb">The string builder  to append to.</param>
+    /// <param name="sb">The string builder to append to.</param>
     /// <param name="columnName">The column name.</param>
     public void AppendColumnName(StringBuilder sb, string columnName)
     {
@@ -89,10 +90,10 @@ public class SqlServerAdapter : ISqlAdapter
     /// <summary>
     /// Adds a column equality to a parameter.
     /// </summary>
-    /// <param name="sb">The string builder  to append to.</param>
+    /// <param name="sb">The string builder to append to.</param>
     /// <param name="columnName">The column name.</param>
     public void AppendColumnNameEqualsValue(StringBuilder sb, string columnName)
     {
-        sb.AppendFormat("[{0}] = @{1}", columnName, columnName);
+        sb.AppendFormat("[{0}] = @{0}", columnName);
     }
 }

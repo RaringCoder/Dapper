@@ -85,6 +85,16 @@ namespace Dapper.Tests.Contrib
         public int Order { get; set; }
     }
 
+    [Table("VersionedEntities")]
+    public class VersionedEntity
+    {
+        public int Id { get; set; }
+        public string Name { get; set; }
+
+        [RowVersion]
+        public byte[] Version { get; set; }
+    }
+
     public abstract partial class TestSuite
     {
         protected static readonly bool IsAppVeyor = Environment.GetEnvironmentVariable("Appveyor")?.ToUpperInvariant() == "TRUE";
@@ -96,6 +106,24 @@ namespace Dapper.Tests.Contrib
             var connection = GetConnection();
             connection.Open();
             return connection;
+        }
+
+        [Fact]
+        public void UpdateVersioned()
+        {
+            using (var connection = GetOpenConnection())
+            {
+                var versioned = new VersionedEntity
+                {
+                    Name = "Adam"
+                };
+                var id = connection.Insert(versioned);
+
+                versioned.Name = "John";
+
+                var updated = connection.Update(versioned);
+                Assert.False(updated);
+            }
         }
 
         [Fact]

@@ -4,13 +4,11 @@ using System.Data;
 using System.Linq;
 using System.Reflection;
 using System.Text;
-using System.Collections.Concurrent;
 using System.Reflection.Emit;
 #if NETSTANDARD1_3
 using DataException = System.InvalidOperationException;
 #else
 using System.Threading;
-
 #endif
 
 namespace Dapper.Contrib.Extensions
@@ -127,27 +125,6 @@ namespace Dapper.Contrib.Extensions
                 type);
         }
 
-        private static T MapResultToType<T>(IEnumerable<dynamic> results, Type type)
-            where T : class
-        {
-            if (!(results.FirstOrDefault() is IDictionary<string, object> res))
-            {
-                return null;
-            }
-
-            var obj = ProxyGenerator.GetInterfaceProxy<T>();
-
-            foreach (var property in TypeCache.TypePropertiesCache(type))
-            {
-                var val = res[property.Name];
-                property.SetValue(obj, Convert.ChangeType(val, property.PropertyType), null);
-            }
-
-            ((IProxy)obj).IsDirty = false; //reset change tracking and return
-
-            return obj;
-        }
-
         private static string GetSelectScript<T>(Type type)
         {
             if (!TypeCache.GetQueries.TryGetValue(type.TypeHandle, out string sql))
@@ -155,7 +132,8 @@ namespace Dapper.Contrib.Extensions
                 var key = GetSingleKey<T>(nameof(GetAsync));
                 var name = GetTableName(type);
 
-                sql = $"SELECT * FROM {name} WHERE {key.Name} = @id";
+                var columns = GetSelectStatementColumns(TypeCache.TypePropertiesCache(type));
+                sql = $"SELECT {columns} FROM {name} WHERE {key.Name} = @id";
                 TypeCache.GetQueries[type.TypeHandle] = sql;
             }
 
@@ -197,34 +175,55 @@ namespace Dapper.Contrib.Extensions
             if (!TypeCache.GetQueries.TryGetValue(cacheType.TypeHandle, out string sql))
             {
                 GetSingleKey<T>(nameof(GetAll));
-                var name = GetTableName(type);
+                var table = GetTableName(type);
 
-                sql = "select * from " + name;
+                var columns = GetSelectStatementColumns(TypeCache.TypePropertiesCache(type));
+                sql = $"SELECT {columns} FROM {table}";
+
+                //sql = "select * from " + name;
                 TypeCache.GetQueries[cacheType.TypeHandle] = sql;
             }
 
             return sql;
         }
-        
+
+        private static T MapResultToType<T>(IEnumerable<dynamic> results, Type type)
+            where T : class
+        {
+            if (!(results.FirstOrDefault() is IDictionary<string, object> res))
+            {
+                return null;
+            }
+
+            var obj = CreateObject<T>(type, res);
+            return obj;
+        }
+
         private static IEnumerable<T> MapResultsToType<T>(IEnumerable<dynamic> result, Type type)
         {
             var list = new List<T>();
 
             foreach (IDictionary<string, object> res in result)
             {
-                var obj = ProxyGenerator.GetInterfaceProxy<T>();
-
-                foreach (var property in TypeCache.TypePropertiesCache(type))
-                {
-                    var val = res[property.Name];
-                    property.SetValue(obj, Convert.ChangeType(val, property.PropertyType), null);
-                }
-
-                ((IProxy)obj).IsDirty = false; //reset change tracking and return
+                var obj = CreateObject<T>(type, res);
                 list.Add(obj);
             }
 
             return list;
+        }
+
+        private static T CreateObject<T>(Type type, IDictionary<string, object> res)
+        {
+            var obj = ProxyGenerator.GetInterfaceProxy<T>();
+
+            foreach (var property in TypeCache.TypePropertiesCache(type))
+            {
+                var val = res[property.Name];
+                property.SetValue(obj, Convert.ChangeType(val, property.PropertyType), null);
+            }
+
+            ((IProxy)obj).IsDirty = false; //reset change tracking and return
+            return obj;
         }
 
         /// <summary>
@@ -303,35 +302,30 @@ namespace Dapper.Contrib.Extensions
             }
 
             var name = GetTableName(type);
-            var sbColumnList = new StringBuilder(null);
             var allProperties = TypeCache.TypePropertiesCache(type);
             var keyProperties = TypeCache.KeyPropertiesCache(type);
             var computedProperties = TypeCache.ComputedPropertiesCache(type);
-            var allPropertiesExceptKeyAndComputed = allProperties
-                .Except(keyProperties.Union(computedProperties))
+            var rowVersion = TypeCache.RowVersionPropertyCache(type);
+
+            var allPropertiesExceptKeyComputedAndVersion = allProperties
+                .Except(keyProperties.Union(computedProperties).Union(OptionalRowVersion(rowVersion)))
                 .ToList();
 
             var adapter = GetFormatter(connection);
+            
+            var sbColumnList = new StringBuilder();
+            var sbParameterList = new StringBuilder();
 
-            for (var i = 0; i < allPropertiesExceptKeyAndComputed.Count; i++)
+            for (var i = 0; i < allPropertiesExceptKeyComputedAndVersion.Count; i++)
             {
-                var property = allPropertiesExceptKeyAndComputed[i];
-                adapter.AppendColumnName(sbColumnList, property.Name); //fix for issue #336
-                if (i < allPropertiesExceptKeyAndComputed.Count - 1)
+                if (i != 0)
                 {
                     sbColumnList.Append(", ");
-                }
-            }
-
-            var sbParameterList = new StringBuilder(null);
-            for (var i = 0; i < allPropertiesExceptKeyAndComputed.Count; i++)
-            {
-                var property = allPropertiesExceptKeyAndComputed[i];
-                sbParameterList.AppendFormat("@{0}", property.Name);
-                if (i < allPropertiesExceptKeyAndComputed.Count - 1)
-                {
                     sbParameterList.Append(", ");
                 }
+                
+                adapter.AppendColumnName(sbColumnList, allPropertiesExceptKeyComputedAndVersion[i].Name); //fix for issue #336
+                sbParameterList.AppendFormat("@{0}", allPropertiesExceptKeyComputedAndVersion[i].Name);
             }
 
             int returnVal;
@@ -349,7 +343,7 @@ namespace Dapper.Contrib.Extensions
             else
             {
                 //insert list of entities
-                var cmd = $"insert into {name} ({sbColumnList}) values ({sbParameterList})";
+                var cmd = $"INSERT INTO {name} ({sbColumnList}) VALUES ({sbParameterList})";
                 returnVal = connection.Execute(cmd, entityToInsert, transaction, commandTimeout);
             }
             if (wasClosed)
@@ -380,13 +374,13 @@ namespace Dapper.Contrib.Extensions
             }
 
             var updateScript = GetUpdateScript<T>(connection);
-
+            
             var updated = connection.Execute(
-                updateScript, 
+                updateScript,
                 entityToUpdate, 
                 commandTimeout: commandTimeout,
                 transaction: transaction);
-
+            
             return updated > 0;
         }
 
@@ -414,21 +408,27 @@ namespace Dapper.Contrib.Extensions
                 throw new ArgumentException("Entity must have at least one [Key] or [ExplicitKey] property");
             }
 
-            var rowVersions = TypeCache.RowVersionPropertiesCache(type);
+            var adapter = GetFormatter(connection);
 
             var name = GetTableName(type);
 
             var sb = new StringBuilder();
-            sb.AppendFormat("update {0} set ", name);
+
+            sb.AppendFormat("UPDATE {0} SET ", name);
 
             var allProperties = TypeCache.TypePropertiesCache(type);
 
-            var computedProperties = TypeCache.ComputedPropertiesCache(type);
-            var nonUpdateProps = allProperties
-                .Except(keyProperties.Union(explicitKeyProperties).Union(computedProperties).Union(rowVersions))
+            var rowVersion = TypeCache.RowVersionPropertyCache(type);
+
+            var keysAndVersion = keyProperties
+                .Union(explicitKeyProperties)
+                .Union(OptionalRowVersion(rowVersion))
                 .ToList();
 
-            var adapter = GetFormatter(connection);
+            var computedProperties = TypeCache.ComputedPropertiesCache(type);
+            var nonUpdateProps = allProperties
+                .Except(keysAndVersion.Union(computedProperties))
+                .ToList();
 
             for (var i = 0; i < nonUpdateProps.Count; i++)
             {
@@ -440,21 +440,40 @@ namespace Dapper.Contrib.Extensions
                     sb.AppendFormat(", ");
                 }
             }
-
-            sb.Append(" where ");
-
-            var totalKeys = keyProperties.Length + explicitKeyProperties.Length;
-            int currentCount = 0;
-
-            foreach (var property in keyProperties.Union(explicitKeyProperties))
+            
+            sb.Append(" WHERE ");
+            
+            for (int i = 0; i < keysAndVersion.Count; i++)
             {
-                currentCount++;
-                adapter.AppendColumnNameEqualsValue(sb, property.Name);
-
-                if (currentCount < totalKeys)
+                if (i != 0)
                 {
-                    sb.AppendFormat(" and ");
+                    sb.Append(" AND ");
                 }
+
+                adapter.AppendColumnNameEqualsValue(sb, keysAndVersion[i].Name);
+            }
+
+            return sb.ToString();
+        }
+
+        private static IEnumerable<PropertyInfo> OptionalRowVersion(PropertyInfo rowVersion)
+        {
+            return rowVersion != null ? new[] {rowVersion} : Enumerable.Empty<PropertyInfo>();
+        }
+
+        internal static string GetSelectStatementColumns(IList<PropertyInfo> properties)
+        {
+            var sb = new StringBuilder();
+
+            for (int i = 0; i < properties.Count; i++)
+            {
+                if (i != 0)
+                {
+                    sb.Append(", ");
+                }
+
+                var property = properties[i];
+                sb.AppendFormat("[{0}]", property.Name);
             }
 
             return sb.ToString();

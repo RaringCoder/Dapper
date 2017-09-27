@@ -39,18 +39,18 @@ public interface ISqlAdapter
     /// <returns>The Id of the row created.</returns>
     Task<int> InsertAsync(IDbConnection connection, IDbTransaction transaction, int? commandTimeout, string tableName,
         string columnList, string parameterList, IEnumerable<PropertyInfo> keyProperties, object entityToInsert);
-
+    
     /// <summary>
     /// Adds the name of a column.
     /// </summary>
-    /// <param name="sb">The string builder  to append to.</param>
+    /// <param name="sb">The string builder to append to.</param>
     /// <param name="columnName">The column name.</param>
     void AppendColumnName(StringBuilder sb, string columnName);
 
     /// <summary>
     /// Adds a column equality to a parameter.
     /// </summary>
-    /// <param name="sb">The string builder  to append to.</param>
+    /// <param name="sb">The string builder to append to.</param>
     /// <param name="columnName">The column name.</param>
     void AppendColumnNameEqualsValue(StringBuilder sb, string columnName);
 }

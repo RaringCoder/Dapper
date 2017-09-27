@@ -5,6 +5,9 @@ using System.Data;
 using System.Linq;
 using System.Reflection;
 using Dapper.Contrib.Extensions;
+#if NETSTANDARD1_3
+using DataException = System.InvalidOperationException;
+#endif
 
 namespace Dapper.Contrib
 {
@@ -14,20 +17,20 @@ namespace Dapper.Contrib
         public PropertyInfo[] ExplicitKeyProperties { get; }
         public PropertyInfo[] TypeProperties { get; }
         public PropertyInfo[] ComputedProperties { get; }
-        public PropertyInfo[] RowVersionProperties { get; }
+        public PropertyInfo RowVersionProperty { get; }
 
         public TypePropertyCache(
             PropertyInfo[] keyProperties,
             PropertyInfo[] explicitKeyProperties,
             PropertyInfo[] typeProperties,
             PropertyInfo[] computedProperties,
-            PropertyInfo[] rowVersionProperties)
+            PropertyInfo rowVersionProperty)
         {
             KeyProperties = keyProperties;
             ExplicitKeyProperties = explicitKeyProperties;
             TypeProperties = typeProperties;
             ComputedProperties = computedProperties;
-            RowVersionProperties = rowVersionProperties;
+            RowVersionProperty = rowVersionProperty;
         }
     }
 
@@ -52,8 +55,8 @@ namespace Dapper.Contrib
             var keys = new List<PropertyInfo>();
             var explicitKeys = new List<PropertyInfo>();
             var computed = new List<PropertyInfo>();
-            var rowVersions = new List<PropertyInfo>();
-
+            
+            PropertyInfo rowVersion = null;
             PropertyInfo idPropertyByConvention = null;
 
             foreach (var property in allProperties.Where(IsWriteable))
@@ -81,7 +84,12 @@ namespace Dapper.Contrib
                     }
                     else if (attribute is RowVersionAttribute)
                     {
-                        rowVersions.Add(property);
+                        if (rowVersion != null)
+                        {
+                            throw new DataException($"Only one property can be decorated with [RowVersion].");
+                        }
+
+                        rowVersion = property;
                     }
                 }
 
@@ -107,21 +115,21 @@ namespace Dapper.Contrib
                 explicitKeys.ToArray(),
                 properties.ToArray(),
                 computed.ToArray(),
-                rowVersions.ToArray());
+                rowVersion);
 
             CachedTypes[type.TypeHandle] = cache;
             return cache;
         }
 
-        internal static PropertyInfo[] RowVersionPropertiesCache(Type type)
+        internal static PropertyInfo RowVersionPropertyCache(Type type)
         {
             if (CachedTypes.TryGetValue(type.TypeHandle, out TypePropertyCache properties))
             {
-                return properties.RowVersionProperties;
+                return properties.RowVersionProperty;
             }
 
             var cache = WalkTypeProperties(type);
-            return cache.RowVersionProperties;
+            return cache.RowVersionProperty;
         }
 
         internal static PropertyInfo[] ComputedPropertiesCache(Type type)
