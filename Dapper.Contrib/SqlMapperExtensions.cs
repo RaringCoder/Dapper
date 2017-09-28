@@ -1,4 +1,5 @@
 ﻿using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Data;
 using System.Linq;
@@ -67,11 +68,15 @@ namespace Dapper.Contrib.Extensions
                 ["fbconnection"] = new FirebaseAdapter()
             };
 
+        internal static readonly ConcurrentDictionary<RuntimeTypeHandle, string> TypeTableName =
+            new ConcurrentDictionary<RuntimeTypeHandle, string>();
+
+
         private static PropertyInfo GetSingleKey<T>(string method)
         {
             var type = typeof(T);
-            var keys = TypeCache.KeyPropertiesCache(type);
-            var explicitKeys = TypeCache.ExplicitKeyPropertiesCache(type);
+            var keys = TypeCache.KeyProperties(type);
+            var explicitKeys = TypeCache.ExplicitKeyProperties(type);
             var keyCount = keys.Length + explicitKeys.Length;
 
             if (keyCount > 1)
@@ -107,7 +112,7 @@ namespace Dapper.Contrib.Extensions
         {
             var type = typeof(T);
 
-            var sql = GetSelectScript<T>(type);
+            var sql = GetSelectScript<T>(type, nameof(Get));
 
             var dynParms = new DynamicParameters();
             dynParms.Add("@id", id);
@@ -125,17 +130,16 @@ namespace Dapper.Contrib.Extensions
                 type);
         }
 
-        private static string GetSelectScript<T>(Type type)
+        private static string GetSelectScript<T>(Type type, string methodName)
         {
-            if (!TypeCache.GetQueries.TryGetValue(type.TypeHandle, out string sql))
+            var sql = SqlCache.GetOrCacheSelect(type, () =>
             {
-                var key = GetSingleKey<T>(nameof(GetAsync));
-                var name = GetTableName(type);
+                // We can be sly and cache or make use of the SelectAll stuff on Select.
+                var selectFromTable = GetSelectAllScript<T>(methodName);
 
-                var columns = GetSelectStatementColumns(TypeCache.TypePropertiesCache(type));
-                sql = $"SELECT {columns} FROM {name} WHERE {key.Name} = @id";
-                TypeCache.GetQueries[type.TypeHandle] = sql;
-            }
+                var key = GetSingleKey<T>(methodName);
+                return $"{selectFromTable} WHERE {key.Name} = @id";
+            });
 
             return sql;
         }
@@ -157,7 +161,8 @@ namespace Dapper.Contrib.Extensions
             int? commandTimeout = null) where T : class
         {
             var type = typeof(T);
-            var sql = GetSelectAllScript<T>(type);
+            GetSingleKey<T>(nameof(GetAll));
+            var sql = GetSelectAllScript<T>(nameof(GetAll));
 
             if (!type.IsInterface())
             {
@@ -167,24 +172,20 @@ namespace Dapper.Contrib.Extensions
             var result = connection.Query(sql, transaction: transaction, commandTimeout: commandTimeout);
             return MapResultsToType<T>(result, type);
         }
-
-        private static string GetSelectAllScript<T>(Type type)
+        
+        private static string GetSelectAllScript<T>(string methodName)
         {
-            var cacheType = typeof(List<T>);
-
-            if (!TypeCache.GetQueries.TryGetValue(cacheType.TypeHandle, out string sql))
+            var selectFromTable = SqlCache.GetOrCacheSelect(typeof(List<T>), () =>
             {
-                GetSingleKey<T>(nameof(GetAll));
-                var table = GetTableName(type);
+                var type = typeof(T);
+                GetSingleKey<T>(methodName); // assert single key
+                var name = GetTableName(type);
+                var columns = GetSelectStatementColumns(type);
 
-                var columns = GetSelectStatementColumns(TypeCache.TypePropertiesCache(type));
-                sql = $"SELECT {columns} FROM {table}";
+                return $"SELECT {columns} FROM {name}";
+            });
 
-                //sql = "select * from " + name;
-                TypeCache.GetQueries[cacheType.TypeHandle] = sql;
-            }
-
-            return sql;
+            return selectFromTable;
         }
 
         private static T MapResultToType<T>(IEnumerable<dynamic> results, Type type)
@@ -216,7 +217,7 @@ namespace Dapper.Contrib.Extensions
         {
             var obj = ProxyGenerator.GetInterfaceProxy<T>();
 
-            foreach (var property in TypeCache.TypePropertiesCache(type))
+            foreach (var property in TypeCache.AllProperties(type))
             {
                 var val = res[property.Name];
                 property.SetValue(obj, Convert.ChangeType(val, property.PropertyType), null);
@@ -233,7 +234,7 @@ namespace Dapper.Contrib.Extensions
 
         private static string GetTableName(Type type)
         {
-            if (TypeCache.TypeTableName.TryGetValue(type.TypeHandle, out string name))
+            if (TypeTableName.TryGetValue(type.TypeHandle, out string name))
             {
                 return name;
             }
@@ -267,7 +268,7 @@ namespace Dapper.Contrib.Extensions
                 }
             }
 
-            TypeCache.TypeTableName[type.TypeHandle] = name;
+            TypeTableName[type.TypeHandle] = name;
             return name;
         }
 
@@ -286,6 +287,11 @@ namespace Dapper.Contrib.Extensions
             IDbTransaction transaction = null,
             int? commandTimeout = null) where T : class
         {
+            if (entityToInsert == null)
+            {
+                throw new ArgumentNullException(nameof(entityToInsert), "Cannot insert a null object.");
+            }
+
             var isList = false;
 
             var type = typeof(T);
@@ -302,9 +308,9 @@ namespace Dapper.Contrib.Extensions
             }
 
             var name = GetTableName(type);
-            var allProperties = TypeCache.TypePropertiesCache(type);
-            var keyProperties = TypeCache.KeyPropertiesCache(type);
-            var computedProperties = TypeCache.ComputedPropertiesCache(type);
+            var allProperties = TypeCache.AllProperties(type);
+            var keyProperties = TypeCache.KeyProperties(type);
+            var computedProperties = TypeCache.ComputedProperties(type);
             var rowVersion = TypeCache.RowVersionPropertyCache(type);
 
             var allPropertiesExceptKeyComputedAndVersion = allProperties
@@ -352,7 +358,7 @@ namespace Dapper.Contrib.Extensions
             }
             return returnVal;
         }
-
+        
         /// <summary>
         /// Updates entity in table "Ts", checks if the entity is modified if the entity is tracked by the Get() extension.
         /// </summary>
@@ -364,10 +370,15 @@ namespace Dapper.Contrib.Extensions
         /// <returns>true if updated, false if not found or not modified (tracked entities)</returns>
         public static bool Update<T>(
             this IDbConnection connection, 
-            T entityToUpdate, IDbTransaction 
-            transaction = null,
+            T entityToUpdate, 
+            IDbTransaction transaction = null,
             int? commandTimeout = null) where T : class
         {
+            if (entityToUpdate == null)
+            {
+                throw new ArgumentNullException(nameof(entityToUpdate), "Cannot update a null object.");
+            }
+
             if (entityToUpdate is IProxy proxy && !proxy.IsDirty)
             {
                 return false;
@@ -391,69 +402,74 @@ namespace Dapper.Contrib.Extensions
         {
             var type = typeof(T);
 
-            if (type.IsArray)
+            var sql = SqlCache.GetOrCacheUpdate(type, () =>
             {
-                type = type.GetElementType();
-            }
-            else if (type.IsGenericType())
-            {
-                type = type.GetGenericArguments()[0];
-            }
-
-            var keyProperties = TypeCache.KeyPropertiesCache(type);
-            var explicitKeyProperties = TypeCache.ExplicitKeyPropertiesCache(type);
-
-            if (keyProperties.Length == 0 && explicitKeyProperties.Length == 0)
-            {
-                throw new ArgumentException("Entity must have at least one [Key] or [ExplicitKey] property");
-            }
-
-            var adapter = GetFormatter(connection);
-
-            var name = GetTableName(type);
-
-            var sb = new StringBuilder();
-
-            sb.AppendFormat("UPDATE {0} SET ", name);
-
-            var allProperties = TypeCache.TypePropertiesCache(type);
-
-            var rowVersion = TypeCache.RowVersionPropertyCache(type);
-
-            var keysAndVersion = keyProperties
-                .Union(explicitKeyProperties)
-                .Union(OptionalRowVersion(rowVersion))
-                .ToList();
-
-            var computedProperties = TypeCache.ComputedPropertiesCache(type);
-            var nonUpdateProps = allProperties
-                .Except(keysAndVersion.Union(computedProperties))
-                .ToList();
-
-            for (var i = 0; i < nonUpdateProps.Count; i++)
-            {
-                var property = nonUpdateProps[i];
-                adapter.AppendColumnNameEqualsValue(sb, property.Name);
-
-                if (i < nonUpdateProps.Count - 1)
+                if (type.IsArray)
                 {
-                    sb.AppendFormat(", ");
+                    type = type.GetElementType();
                 }
-            }
-            
-            sb.Append(" WHERE ");
-            
-            for (int i = 0; i < keysAndVersion.Count; i++)
-            {
-                if (i != 0)
+                else if (type.IsGenericType())
                 {
-                    sb.Append(" AND ");
+                    type = type.GetGenericArguments()[0];
                 }
 
-                adapter.AppendColumnNameEqualsValue(sb, keysAndVersion[i].Name);
-            }
+                var keyProperties = TypeCache.KeyProperties(type);
+                var explicitKeyProperties = TypeCache.ExplicitKeyProperties(type);
 
-            return sb.ToString();
+                if (keyProperties.Length == 0 && explicitKeyProperties.Length == 0)
+                {
+                    throw new ArgumentException("Entity must have at least one [Key] or [ExplicitKey] property");
+                }
+
+                var adapter = GetFormatter(connection);
+
+                var name = GetTableName(type);
+
+                var sb = new StringBuilder();
+
+                sb.AppendFormat("UPDATE {0} SET ", name);
+
+                var allProperties = TypeCache.AllProperties(type);
+
+                var rowVersion = TypeCache.RowVersionPropertyCache(type);
+
+                var keysAndVersion = keyProperties
+                    .Union(explicitKeyProperties)
+                    .Union(OptionalRowVersion(rowVersion))
+                    .ToList();
+
+                var computedProperties = TypeCache.ComputedProperties(type);
+                var nonUpdateProps = allProperties
+                    .Except(keysAndVersion.Union(computedProperties))
+                    .ToList();
+
+                for (var i = 0; i < nonUpdateProps.Count; i++)
+                {
+                    var property = nonUpdateProps[i];
+                    adapter.AppendColumnNameEqualsValue(sb, property.Name);
+
+                    if (i < nonUpdateProps.Count - 1)
+                    {
+                        sb.AppendFormat(", ");
+                    }
+                }
+
+                sb.Append(" WHERE ");
+
+                for (int i = 0; i < keysAndVersion.Count; i++)
+                {
+                    if (i != 0)
+                    {
+                        sb.Append(" AND ");
+                    }
+
+                    adapter.AppendColumnNameEqualsValue(sb, keysAndVersion[i].Name);
+                }
+
+                return sb.ToString();
+            });
+
+            return sql;
         }
 
         private static IEnumerable<PropertyInfo> OptionalRowVersion(PropertyInfo rowVersion)
@@ -472,8 +488,12 @@ namespace Dapper.Contrib.Extensions
             return att != null && att.Write;
         }
 
-        internal static string GetSelectStatementColumns(IList<PropertyInfo> properties)
+        internal static string GetSelectStatementColumns(Type type)
         {
+            var properties = TypeCache.AllProperties(type)
+                .Except(TypeCache.ComputedProperties(type))
+                .ToList();
+
             var sb = new StringBuilder();
 
             for (int i = 0; i < properties.Count; i++)
@@ -505,60 +525,65 @@ namespace Dapper.Contrib.Extensions
             IDbTransaction transaction = null,
             int? commandTimeout = null) where T : class
         {
-            var deleteScript = GetDeleteScript(connection, entityToDelete);
+            if (entityToDelete == null)
+            {
+                throw new ArgumentNullException(nameof(entityToDelete), "Cannot delete a null object.");
+            }
+            
+            var deleteScript = GetDeleteScript<T>(connection);
 
             var deleted = connection.Execute(deleteScript, entityToDelete, transaction, commandTimeout);
             return deleted > 0;
         }
 
-        private static string GetDeleteScript<T>(IDbConnection connection, T entityToDelete)
+        private static string GetDeleteScript<T>(IDbConnection connection)
         {
-            if (entityToDelete == null)
-            {
-                throw new ArgumentException("Cannot Delete null Object", nameof(entityToDelete));
-            }
-
             var type = typeof(T);
 
-            if (type.IsArray)
+            var sql = SqlCache.GetOrCacheDelete(type, () =>
             {
-                type = type.GetElementType();
-            }
-            else if (type.IsGenericType())
-            {
-                type = type.GetGenericArguments()[0];
-            }
-
-            var keyProperties = TypeCache.KeyPropertiesCache(type);
-            var explicitKeyProperties = TypeCache.ExplicitKeyPropertiesCache(type);
-
-            if (keyProperties.Length == 0 && explicitKeyProperties.Length == 0)
-            {
-                throw new ArgumentException("Entity must have at least one [Key] or [ExplicitKey] property");
-            }
-
-            var name = GetTableName(type);
-
-            var sb = new StringBuilder();
-            sb.AppendFormat("delete from {0} where ", name);
-
-            var adapter = GetFormatter(connection);
-
-            var totalKeys = keyProperties.Length + explicitKeyProperties.Length;
-            int currentCount = 0;
-
-            foreach (var property in keyProperties.Union(explicitKeyProperties))
-            {
-                currentCount++;
-                adapter.AppendColumnNameEqualsValue(sb, property.Name); //fix for issue #336
-
-                if (currentCount < totalKeys)
+                if (type.IsArray)
                 {
-                    sb.AppendFormat(" and ");
+                    type = type.GetElementType();
                 }
-            }
+                else if (type.IsGenericType())
+                {
+                    type = type.GetGenericArguments()[0];
+                }
 
-            return sb.ToString();
+                var keyProperties = TypeCache.KeyProperties(type);
+                var explicitKeyProperties = TypeCache.ExplicitKeyProperties(type);
+
+                if (keyProperties.Length == 0 && explicitKeyProperties.Length == 0)
+                {
+                    throw new ArgumentException("Entity must have at least one [Key] or [ExplicitKey] property");
+                }
+
+                var name = GetTableName(type);
+
+                var sb = new StringBuilder();
+                sb.AppendFormat("DELETE FROM {0} WHERE ", name);
+
+                var adapter = GetFormatter(connection);
+
+                var totalKeys = keyProperties.Length + explicitKeyProperties.Length;
+                int currentCount = 0;
+
+                foreach (var property in keyProperties.Union(explicitKeyProperties))
+                {
+                    currentCount++;
+                    adapter.AppendColumnNameEqualsValue(sb, property.Name); //fix for issue #336
+
+                    if (currentCount < totalKeys)
+                    {
+                        sb.AppendFormat(" AND ");
+                    }
+                }
+
+                return sb.ToString();
+            });
+
+            return sql;
         }
 
         /// <summary>
@@ -573,8 +598,7 @@ namespace Dapper.Contrib.Extensions
             int? commandTimeout = null) where T : class
         {
             var type = typeof(T);
-            var name = GetTableName(type);
-            var statement = $"delete from {name}";
+            var statement = "DELETE FROM " + GetTableName(type);
             var deleted = connection.Execute(statement, null, transaction, commandTimeout);
             return deleted > 0;
         }

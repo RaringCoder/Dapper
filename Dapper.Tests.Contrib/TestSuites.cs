@@ -139,6 +139,7 @@ namespace Dapper.Tests.Contrib
                 connection.Execute("CREATE TABLE ObjectX (ObjectXId nvarchar(100) not null, Name nvarchar(100) not null) ");
                 connection.Execute("CREATE TABLE ObjectY (ObjectYId integer not null, Name nvarchar(100) not null) ");
                 connection.Execute("CREATE TABLE ObjectZ (Id integer not null, Name nvarchar(100) not null) ");
+                connection.Execute("CREATE TABLE VersionedEntities (Id integer primary key autoincrement not null, Name nvarchar(100) not null, Version timestamp) ");
             }
         }
     }

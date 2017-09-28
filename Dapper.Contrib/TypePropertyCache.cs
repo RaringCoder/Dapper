@@ -11,24 +11,24 @@ using DataException = System.InvalidOperationException;
 
 namespace Dapper.Contrib
 {
-    internal sealed class TypePropertyCache
+    internal sealed class TypeProperties
     {
         public PropertyInfo[] KeyProperties { get; }
         public PropertyInfo[] ExplicitKeyProperties { get; }
-        public PropertyInfo[] TypeProperties { get; }
+        public PropertyInfo[] AllProperties { get; }
         public PropertyInfo[] ComputedProperties { get; }
         public PropertyInfo RowVersionProperty { get; }
 
-        public TypePropertyCache(
+        public TypeProperties(
             PropertyInfo[] keyProperties,
             PropertyInfo[] explicitKeyProperties,
-            PropertyInfo[] typeProperties,
+            PropertyInfo[] allProperties,
             PropertyInfo[] computedProperties,
             PropertyInfo rowVersionProperty)
         {
             KeyProperties = keyProperties;
             ExplicitKeyProperties = explicitKeyProperties;
-            TypeProperties = typeProperties;
+            AllProperties = allProperties;
             ComputedProperties = computedProperties;
             RowVersionProperty = rowVersionProperty;
         }
@@ -38,16 +38,10 @@ namespace Dapper.Contrib
 
     internal static class TypeCache
     {
-        private static readonly ConcurrentDictionary<RuntimeTypeHandle, TypePropertyCache> CachedTypes =
-            new ConcurrentDictionary<RuntimeTypeHandle, TypePropertyCache>();
+        private static readonly ConcurrentDictionary<RuntimeTypeHandle, TypeProperties> CachedTypes =
+            new ConcurrentDictionary<RuntimeTypeHandle, TypeProperties>();
 
-        internal static readonly ConcurrentDictionary<RuntimeTypeHandle, string> GetQueries =
-            new ConcurrentDictionary<RuntimeTypeHandle, string>();
-
-        internal static readonly ConcurrentDictionary<RuntimeTypeHandle, string> TypeTableName =
-            new ConcurrentDictionary<RuntimeTypeHandle, string>();
-
-        private static TypePropertyCache WalkTypeProperties(Type type)
+        private static TypeProperties WalkTypeProperties(Type type)
         {
             var allProperties = type.GetProperties();
 
@@ -110,7 +104,7 @@ namespace Dapper.Contrib
 
             // Capture arrays so we don't waste unallocated space in the lists, as we are caching for the duration of the process.
             // TODO When Spans come out, we can allocate one large array of PropertyInfo[] and span across for specific properties.
-            var cache = new TypePropertyCache(
+            var cache = new TypeProperties(
                 keys.ToArray(),
                 explicitKeys.ToArray(),
                 properties.ToArray(),
@@ -123,7 +117,7 @@ namespace Dapper.Contrib
 
         internal static PropertyInfo RowVersionPropertyCache(Type type)
         {
-            if (CachedTypes.TryGetValue(type.TypeHandle, out TypePropertyCache properties))
+            if (CachedTypes.TryGetValue(type.TypeHandle, out TypeProperties properties))
             {
                 return properties.RowVersionProperty;
             }
@@ -132,9 +126,9 @@ namespace Dapper.Contrib
             return cache.RowVersionProperty;
         }
 
-        internal static PropertyInfo[] ComputedPropertiesCache(Type type)
+        internal static PropertyInfo[] ComputedProperties(Type type)
         {
-            if (CachedTypes.TryGetValue(type.TypeHandle, out TypePropertyCache properties))
+            if (CachedTypes.TryGetValue(type.TypeHandle, out TypeProperties properties))
             {
                 return properties.ComputedProperties;
             }
@@ -143,9 +137,9 @@ namespace Dapper.Contrib
             return cache.ComputedProperties;
         }
 
-        internal static PropertyInfo[] ExplicitKeyPropertiesCache(Type type)
+        internal static PropertyInfo[] ExplicitKeyProperties(Type type)
         {
-            if (CachedTypes.TryGetValue(type.TypeHandle, out TypePropertyCache properties))
+            if (CachedTypes.TryGetValue(type.TypeHandle, out TypeProperties properties))
             {
                 return properties.ExplicitKeyProperties;
             }
@@ -154,9 +148,9 @@ namespace Dapper.Contrib
             return cache.ExplicitKeyProperties;
         }
 
-        internal static PropertyInfo[] KeyPropertiesCache(Type type)
+        internal static PropertyInfo[] KeyProperties(Type type)
         {
-            if (CachedTypes.TryGetValue(type.TypeHandle, out TypePropertyCache properties))
+            if (CachedTypes.TryGetValue(type.TypeHandle, out TypeProperties properties))
             {
                 return properties.KeyProperties;
             }
@@ -165,15 +159,15 @@ namespace Dapper.Contrib
             return cache.KeyProperties;
         }
 
-        internal static PropertyInfo[] TypePropertiesCache(Type type)
+        internal static PropertyInfo[] AllProperties(Type type)
         {
-            if (CachedTypes.TryGetValue(type.TypeHandle, out TypePropertyCache properties))
+            if (CachedTypes.TryGetValue(type.TypeHandle, out TypeProperties properties))
             {
-                return properties.TypeProperties;
+                return properties.AllProperties;
             }
 
             var cache = WalkTypeProperties(type);
-            return cache.TypeProperties;
+            return cache.AllProperties;
         }
 
         private static bool IsWriteable(PropertyInfo pi)

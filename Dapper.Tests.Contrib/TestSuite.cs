@@ -109,7 +109,7 @@ namespace Dapper.Tests.Contrib
         }
 
         [Fact]
-        public void UpdateVersioned()
+        public void UpdateVersioned_CannotUpdateWithIncorrectVersion()
         {
             using (var connection = GetOpenConnection())
             {
@@ -117,6 +117,8 @@ namespace Dapper.Tests.Contrib
                 {
                     Name = "Adam"
                 };
+
+                // Version is not automatically updated on insert, this may need visiting.
                 var id = connection.Insert(versioned);
 
                 versioned.Name = "John";

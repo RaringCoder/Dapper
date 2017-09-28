@@ -16,7 +16,7 @@ namespace Dapper.Tests
         public static string ConnectionString =>
             IsAppVeyor
                 ? @"Server=(local)\SQL2016;Database=tempdb;User ID=sa;Password=Password12!"
-                : "Data Source=.;Initial Catalog=tempdb;Integrated Security=True";
+                : "Data Source=(localdb)\\mssqllocaldb;Initial Catalog=tempdb;Integrated Security=True";
 
         protected SqlConnection _connection;
         protected SqlConnection connection => _connection ?? (_connection = GetOpenConnection());

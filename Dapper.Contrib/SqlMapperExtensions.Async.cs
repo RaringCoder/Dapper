@@ -29,7 +29,7 @@ namespace Dapper.Contrib.Extensions
         {
             var type = typeof(T);
 
-            var sql = GetSelectScript<T>(type);
+            var sql = GetSelectScript<T>(type, nameof(GetAsync));
 
             var dynParms = new DynamicParameters();
             dynParms.Add("@id", id);
@@ -63,7 +63,7 @@ namespace Dapper.Contrib.Extensions
             IDbTransaction transaction = null, int? commandTimeout = null) where T : class
         {
             var type = typeof(T);
-            var sql = GetSelectAllScript<T>(type);
+            var sql = GetSelectAllScript<T>(nameof(GetAllAsync));
 
             if (!type.IsInterface())
             {
@@ -102,6 +102,11 @@ namespace Dapper.Contrib.Extensions
             int? commandTimeout = null, 
             ISqlAdapter sqlAdapter = null) where T : class
         {
+            if (entityToInsert == null)
+            {
+                throw new ArgumentNullException(nameof(entityToInsert), "Cannot insert a null object.");
+            }
+            
             sqlAdapter = sqlAdapter ?? GetFormatter(connection);
 
             var isList = false;
@@ -120,9 +125,9 @@ namespace Dapper.Contrib.Extensions
             }
 
             var name = GetTableName(type);
-            var allProperties = TypeCache.TypePropertiesCache(type);
-            var keyProperties = TypeCache.KeyPropertiesCache(type);
-            var computedProperties = TypeCache.ComputedPropertiesCache(type);
+            var allProperties = TypeCache.AllProperties(type);
+            var keyProperties = TypeCache.KeyProperties(type);
+            var computedProperties = TypeCache.ComputedProperties(type);
             var rowVersion = TypeCache.RowVersionPropertyCache(type);
             var allPropertiesExceptKeyComputedAndRowVersion =
                 allProperties.Except(keyProperties.Union(computedProperties).Union(OptionalRowVersion(rowVersion))).ToList();
@@ -150,6 +155,7 @@ namespace Dapper.Contrib.Extensions
 
             //insert list of entities
             var cmd = $"INSERT INTO {name} ({sbColumnList}) values ({sbParameterList})";
+
             return connection.ExecuteAsync(cmd, entityToInsert, transaction, commandTimeout);
         }
 
@@ -168,6 +174,11 @@ namespace Dapper.Contrib.Extensions
             IDbTransaction transaction = null, 
             int? commandTimeout = null) where T : class
         {
+            if (entityToUpdate == null)
+            {
+                throw new ArgumentNullException(nameof(entityToUpdate), "Cannot update a null object.");
+            }
+
             if (entityToUpdate is IProxy proxy && !proxy.IsDirty)
             {
                 return false;
@@ -200,7 +211,12 @@ namespace Dapper.Contrib.Extensions
             IDbTransaction transaction = null, 
             int? commandTimeout = null) where T : class
         {
-            var deleteScript = GetDeleteScript(connection, entityToDelete);
+            if (entityToDelete == null)
+            {
+                throw new ArgumentNullException(nameof(entityToDelete), "Cannot delete a null object.");
+            }
+
+            var deleteScript = GetDeleteScript<T>(connection);
 
             var deleted = await connection.ExecuteAsync(
                     deleteScript, 
